@@ -199,6 +199,8 @@ module w90_library
   !! get wannier centers
   public :: w90_get_fortran_file
   !! open a file and get the corresponding unit number
+  public :: w90_get_m_local
+  !! copy the current rank-local M matrix out of the library object
   public :: w90_get_fortran_stderr
   !! get a fortran unit number corresponding to standard error
   public :: w90_get_fortran_stdout
@@ -207,6 +209,10 @@ module w90_library
   !! get projection info (after interpreting projector specification strings)
   public :: w90_get_spreads
   !! get spreads
+  public :: w90_get_u_matrix
+  !! copy the current localization gauge out of the library object
+  public :: w90_get_u_opt
+  !! copy the current disentanglement gauge out of the library object
   public :: w90_get_nnkp
   !! get k' indexes for finite-difference scheme
   public :: w90_get_nn
@@ -243,6 +249,10 @@ module w90_library
   !! perform transport functions
   public :: w90_wannierise
   !! perform wannierisation
+  public :: w90_wannierise_one_step
+  !! diagnostic wrapper: run exactly one MLWF iteration through the normal driver
+  public :: w90_update_m_local_from_u
+  !! rebuild local M matrices from an explicit gauge and local overlap layer
 
   interface w90_set_option
     module procedure w90_set_option_logical
@@ -758,6 +768,28 @@ contains
     end if
   end subroutine w90_wannierise
 
+  subroutine w90_wannierise_one_step(common_data, istdout, istderr, ierr)
+    !! Diagnostic fallback for external symmetry projection drivers.
+    !!
+    !! This intentionally reuses the normal wannierisation entry point with
+    !! num_iter temporarily set to one. It does not preserve conjugate-gradient
+    !! history between calls, so it is not a substitute for the future
+    !! prepare/step/finish hook API.
+    implicit none
+
+    type(lib_common_type), intent(inout) :: common_data
+    integer, intent(in) :: istdout, istderr
+    integer, intent(out) :: ierr
+
+    integer :: num_iter_saved
+
+    ierr = 0
+    num_iter_saved = common_data%wann_control%num_iter
+    common_data%wann_control%num_iter = 1
+    call w90_wannierise(common_data, istdout, istderr, ierr)
+    common_data%wann_control%num_iter = num_iter_saved
+  end subroutine w90_wannierise_one_step
+
   subroutine w90_plot(common_data, istdout, istderr, ierr)
     !! performs a variety of plotting functions
 
@@ -878,6 +910,233 @@ contains
 
     common_data%eigval => eigval
   end subroutine w90_set_eigval
+
+  subroutine w90_get_u_matrix(common_data, u_matrix, istdout, istderr, ierr)
+    use w90_error, only: w90_error_type, set_error_fatal
+    implicit none
+
+    type(lib_common_type), intent(in) :: common_data
+    complex(kind=dp), intent(inout) :: u_matrix(:, :, :)
+    integer, intent(in) :: istdout, istderr
+    integer, intent(out) :: ierr
+
+    type(w90_error_type), allocatable :: error
+
+    ierr = 0
+    if (.not. associated(common_data%u_matrix)) then
+      call set_error_fatal(error, 'Error: u_matrix not associated for w90_get_u_matrix() call', &
+                           common_data%comm)
+    elseif (size(u_matrix, 1) /= size(common_data%u_matrix, 1) .or. &
+            size(u_matrix, 2) /= size(common_data%u_matrix, 2) .or. &
+            size(u_matrix, 3) /= size(common_data%u_matrix, 3)) then
+      call set_error_fatal(error, 'Error: u_matrix argument has wrong shape in w90_get_u_matrix() call', &
+                           common_data%comm)
+    end if
+    if (allocated(error)) then
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+
+    u_matrix = common_data%u_matrix
+  end subroutine w90_get_u_matrix
+
+  subroutine w90_get_u_opt(common_data, u_matrix_opt, istdout, istderr, ierr)
+    use w90_error, only: w90_error_type, set_error_fatal
+    implicit none
+
+    type(lib_common_type), intent(in) :: common_data
+    complex(kind=dp), intent(inout) :: u_matrix_opt(:, :, :)
+    integer, intent(in) :: istdout, istderr
+    integer, intent(out) :: ierr
+
+    type(w90_error_type), allocatable :: error
+
+    ierr = 0
+    if (.not. associated(common_data%u_matrix_opt)) then
+      call set_error_fatal(error, 'Error: u_matrix_opt not associated for w90_get_u_opt() call', &
+                           common_data%comm)
+    elseif (size(u_matrix_opt, 1) /= size(common_data%u_matrix_opt, 1) .or. &
+            size(u_matrix_opt, 2) /= size(common_data%u_matrix_opt, 2) .or. &
+            size(u_matrix_opt, 3) /= size(common_data%u_matrix_opt, 3)) then
+      call set_error_fatal(error, 'Error: u_matrix_opt argument has wrong shape in w90_get_u_opt() call', &
+                           common_data%comm)
+    end if
+    if (allocated(error)) then
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+
+    u_matrix_opt = common_data%u_matrix_opt
+  end subroutine w90_get_u_opt
+
+  subroutine w90_get_m_local(common_data, m_matrix_local, istdout, istderr, ierr)
+    use w90_error, only: w90_error_type, set_error_fatal
+    implicit none
+
+    type(lib_common_type), intent(in) :: common_data
+    complex(kind=dp), intent(inout) :: m_matrix_local(:, :, :, :)
+    integer, intent(in) :: istdout, istderr
+    integer, intent(out) :: ierr
+
+    type(w90_error_type), allocatable :: error
+
+    ierr = 0
+    if (.not. associated(common_data%m_matrix_local)) then
+      call set_error_fatal(error, 'Error: m_matrix_local not associated for w90_get_m_local() call', &
+                           common_data%comm)
+    elseif (size(m_matrix_local, 1) /= size(common_data%m_matrix_local, 1) .or. &
+            size(m_matrix_local, 2) /= size(common_data%m_matrix_local, 2) .or. &
+            size(m_matrix_local, 3) /= size(common_data%m_matrix_local, 3) .or. &
+            size(m_matrix_local, 4) /= size(common_data%m_matrix_local, 4)) then
+      call set_error_fatal(error, 'Error: m_matrix_local argument has wrong shape in w90_get_m_local() call', &
+                           common_data%comm)
+    end if
+    if (allocated(error)) then
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+
+    m_matrix_local = common_data%m_matrix_local
+  end subroutine w90_get_m_local
+
+  subroutine w90_update_m_local_from_u(common_data, m_matrix_orig_local, u_matrix_full, &
+                                       istdout, istderr, ierr)
+    use w90_comms, only: mpirank
+    use w90_constants, only: cmplx_0, cmplx_1
+    use w90_error, only: w90_error_type, set_error_alloc, set_error_dealloc, set_error_fatal
+    use w90_io, only: io_stopwatch_start, io_stopwatch_stop
+    implicit none
+
+    type(lib_common_type), intent(inout) :: common_data
+    complex(kind=dp), intent(in) :: m_matrix_orig_local(:, :, :, :)
+    complex(kind=dp), intent(in) :: u_matrix_full(:, :, :)
+    integer, intent(in) :: istdout, istderr
+    integer, intent(out) :: ierr
+
+    type(w90_error_type), allocatable :: error
+    complex(kind=dp), allocatable :: cwb(:, :), cww(:, :)
+    integer, allocatable :: global_k(:)
+    integer :: ikg, ikl, my_node_id, nbasis, nkrank, nkp, nkp2, nn, nwann
+
+    ierr = 0
+    if (.not. associated(common_data%m_matrix_local)) then
+      call set_error_fatal(error, 'Error: m_matrix_local not associated for w90_update_m_local_from_u() call', &
+                           common_data%comm)
+    elseif (.not. allocated(common_data%dist_kpoints)) then
+      call set_error_fatal(error, 'Error: distk not set for w90_update_m_local_from_u() call', &
+                           common_data%comm)
+    elseif (size(common_data%dist_kpoints) /= common_data%num_kpts) then
+      call set_error_fatal(error, 'Error: distk has wrong shape for w90_update_m_local_from_u() call', &
+                           common_data%comm)
+    elseif (size(u_matrix_full, 2) /= common_data%num_wann .or. &
+            size(u_matrix_full, 3) /= common_data%num_kpts) then
+      call set_error_fatal(error, 'Error: u_matrix_full argument has wrong shape in w90_update_m_local_from_u() call', &
+                           common_data%comm)
+    elseif (size(m_matrix_orig_local, 1) /= size(u_matrix_full, 1) .or. &
+            size(m_matrix_orig_local, 2) /= size(u_matrix_full, 1) .or. &
+            size(m_matrix_orig_local, 3) /= common_data%kmesh_info%nntot) then
+      call set_error_fatal(error, 'Error: m_matrix_orig_local argument has wrong shape in w90_update_m_local_from_u() call', &
+                           common_data%comm)
+    elseif (size(common_data%m_matrix_local, 1) < common_data%num_wann .or. &
+            size(common_data%m_matrix_local, 2) < common_data%num_wann .or. &
+            size(common_data%m_matrix_local, 3) /= common_data%kmesh_info%nntot) then
+      call set_error_fatal(error, 'Error: associated m_matrix_local has wrong shape in w90_update_m_local_from_u() call', &
+                           common_data%comm)
+    end if
+    if (allocated(error)) then
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+
+    my_node_id = mpirank(common_data%comm)
+    nkrank = count(common_data%dist_kpoints == my_node_id)
+    if (size(m_matrix_orig_local, 4) /= nkrank .or. size(common_data%m_matrix_local, 4) /= nkrank) then
+      call set_error_fatal(error, &
+                           'Error: local k-point dimension mismatch in w90_update_m_local_from_u() call', &
+                           common_data%comm)
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+
+    if (common_data%print_output%timing_level > 1) then
+      call io_stopwatch_start('library: update_m_local_from_u', common_data%timer)
+    end if
+
+    nbasis = size(u_matrix_full, 1)
+    nwann = common_data%num_wann
+
+    allocate (global_k(nkrank), stat=ierr)
+    if (ierr /= 0) then
+      call set_error_alloc(error, 'Error in allocating global_k in w90_update_m_local_from_u', &
+                           common_data%comm)
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+    global_k = huge(1)
+    ikl = 1
+    do ikg = 1, common_data%num_kpts
+      if (common_data%dist_kpoints(ikg) == my_node_id) then
+        global_k(ikl) = ikg
+        ikl = ikl + 1
+      end if
+    end do
+
+    allocate (cwb(nwann, nbasis), stat=ierr)
+    if (ierr /= 0) then
+      call set_error_alloc(error, 'Error in allocating cwb in w90_update_m_local_from_u', &
+                           common_data%comm)
+      if (allocated(global_k)) deallocate (global_k)
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+    allocate (cww(nwann, nwann), stat=ierr)
+    if (ierr /= 0) then
+      call set_error_alloc(error, 'Error in allocating cww in w90_update_m_local_from_u', &
+                           common_data%comm)
+      if (allocated(cwb)) deallocate (cwb)
+      if (allocated(global_k)) deallocate (global_k)
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+
+    do nkp = 1, nkrank
+      do nn = 1, common_data%kmesh_info%nntot
+        nkp2 = common_data%kmesh_info%nnlist(global_k(nkp), nn)
+        call zgemm('C', 'N', nwann, nbasis, nbasis, cmplx_1, &
+                   u_matrix_full(:, :, global_k(nkp)), nbasis, &
+                   m_matrix_orig_local(:, :, nn, nkp), nbasis, cmplx_0, cwb, nwann)
+        call zgemm('N', 'N', nwann, nwann, nbasis, cmplx_1, cwb, nwann, &
+                   u_matrix_full(:, :, nkp2), nbasis, cmplx_0, cww, nwann)
+        common_data%m_matrix_local(1:nwann, 1:nwann, nn, nkp) = cww
+      end do
+    end do
+
+    deallocate (cww, stat=ierr)
+    if (ierr /= 0) then
+      call set_error_dealloc(error, 'Error in deallocating cww in w90_update_m_local_from_u', &
+                             common_data%comm)
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+    deallocate (cwb, stat=ierr)
+    if (ierr /= 0) then
+      call set_error_dealloc(error, 'Error in deallocating cwb in w90_update_m_local_from_u', &
+                             common_data%comm)
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+    deallocate (global_k, stat=ierr)
+    if (ierr /= 0) then
+      call set_error_dealloc(error, 'Error in deallocating global_k in w90_update_m_local_from_u', &
+                             common_data%comm)
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+
+    if (common_data%print_output%timing_level > 1) then
+      call io_stopwatch_stop('library: update_m_local_from_u', common_data%timer)
+    end if
+  end subroutine w90_update_m_local_from_u
 
   subroutine w90_set_constant_bohr_to_ang(common_data, bohr_to_angstrom)
     !! used to set the bohr_to_angstrom value as used in the SCF code
