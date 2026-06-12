@@ -694,7 +694,7 @@ contains
     end if
   end subroutine w90_project_overlap
 
-  subroutine w90_wannierise(common_data, istdout, istderr, ierr)
+  subroutine w90_wannierise(common_data, istdout, istderr, ierr, spread_delta, spread_value)
     ! perform MLWF algorithm
 
     use w90_comms, only: mpirank, comms_sync_error
@@ -709,11 +709,15 @@ contains
     integer, intent(in) :: istdout, istderr
     integer, intent(out) :: ierr
     type(lib_common_type), intent(inout) :: common_data
+    real(kind=dp), optional, intent(out) :: spread_delta(3)
+    real(kind=dp), optional, intent(out) :: spread_value(3)
 
     ! local variables
     type(w90_error_type), allocatable :: error
 
     ierr = 0
+    if (present(spread_delta)) spread_delta = 0.0_dp
+    if (present(spread_value)) spread_value = 0.0_dp
 
     if (.not. associated(common_data%m_matrix_local)) then
       call set_error_fatal(error, 'Error: m_matrix_local not set for call to w90_wannierise()', common_data%comm)
@@ -738,7 +742,8 @@ contains
                              common_data%print_output, common_data%wannier_data, &
                              common_data%m_matrix_local, common_data%u_matrix, &
                              common_data%real_lattice, common_data%num_kpts, common_data%num_wann, &
-                             istdout, common_data%timer, error, common_data%comm)
+                             istdout, common_data%timer, error, common_data%comm, &
+                             spread_delta, spread_value)
         if (allocated(error)) then
           call prterr(error, ierr, istdout, istderr, common_data%comm)
           return
@@ -760,7 +765,7 @@ contains
                      common_data%num_kpts, common_data%num_proj, common_data%num_wann, &
                      common_data%optimisation, common_data%rpt_origin, common_data%band_plot%mode, &
                      common_data%tran%mode, common_data%lsitesymmetry, istdout, common_data%timer, &
-                     common_data%dist_kpoints, error, common_data%comm)
+                     common_data%dist_kpoints, error, common_data%comm, spread_delta, spread_value)
     end if
     if (allocated(error)) then
       call prterr(error, ierr, istdout, istderr, common_data%comm)
@@ -768,7 +773,8 @@ contains
     end if
   end subroutine w90_wannierise
 
-  subroutine w90_wannierise_one_step(common_data, istdout, istderr, ierr)
+  subroutine w90_wannierise_one_step(common_data, istdout, istderr, ierr, spread_delta, spread_value, &
+                                     conv_tol, conv_window)
     !! Diagnostic fallback for external symmetry projection drivers.
     !!
     !! This intentionally reuses the normal wannierisation entry point with
@@ -780,13 +786,19 @@ contains
     type(lib_common_type), intent(inout) :: common_data
     integer, intent(in) :: istdout, istderr
     integer, intent(out) :: ierr
+    real(kind=dp), optional, intent(out) :: spread_delta(3)
+    real(kind=dp), optional, intent(out) :: spread_value(3)
+    real(kind=dp), optional, intent(out) :: conv_tol
+    integer, optional, intent(out) :: conv_window
 
     integer :: num_iter_saved
 
     ierr = 0
+    if (present(conv_tol)) conv_tol = common_data%wann_control%conv_tol*common_data%print_output%lenconfac**2
+    if (present(conv_window)) conv_window = common_data%wann_control%conv_window
     num_iter_saved = common_data%wann_control%num_iter
     common_data%wann_control%num_iter = 1
-    call w90_wannierise(common_data, istdout, istderr, ierr)
+    call w90_wannierise(common_data, istdout, istderr, ierr, spread_delta, spread_value)
     common_data%wann_control%num_iter = num_iter_saved
   end subroutine w90_wannierise_one_step
 

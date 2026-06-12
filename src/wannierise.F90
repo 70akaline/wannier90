@@ -63,7 +63,7 @@ contains
                        m_matrix_loc, u_matrix, real_lattice, wannier_centres_translated, irvec, &
                        mp_grid, ndegen, nrpts, num_kpts, num_proj, num_wann, optimisation, &
                        rpt_origin, bands_plot_mode, transport_mode, lsitesymmetry, stdout, &
-                       timer, dist_k, error, comm)
+                       timer, dist_k, error, comm, spread_delta, spread_value)
     !================================================!
     !
     !! Calculate the Unitary Rotations to give Maximally Localised Wannier Functions
@@ -95,6 +95,8 @@ contains
     type(wannier_data_type), intent(inout)   :: wannier_data
     type(timer_list_type), intent(inout)     :: timer
     type(w90_error_type), allocatable, intent(out) :: error
+    real(kind=dp), optional, intent(out) :: spread_delta(3)
+    real(kind=dp), optional, intent(out) :: spread_value(3)
 
     integer, intent(in) :: mp_grid(3)
     integer, intent(in) :: num_kpts
@@ -194,6 +196,9 @@ contains
     if (print_output%timing_level > 0 .and. print_output%iprint > 0) then
       call io_stopwatch_start('wann: main', timer)
     end if
+
+    if (present(spread_delta)) spread_delta = 0.0_dp
+    if (present(spread_value)) spread_value = 0.0_dp
 
     first_pass = .true.
 
@@ -776,9 +781,27 @@ contains
       if (.not. wann_control%constrain%selective_loc) then
         omega%total = wann_spread%om_tot
         omega%tilde = wann_spread%om_d + wann_spread%om_od
+        if (present(spread_delta)) then
+          spread_delta = [wann_spread%om_d - old_spread%om_d, &
+                          wann_spread%om_od - old_spread%om_od, &
+                          wann_spread%om_tot - old_spread%om_tot]*print_output%lenconfac**2
+        end if
+        if (present(spread_value)) then
+          spread_value = [wann_spread%om_d, wann_spread%om_od, &
+                          wann_spread%om_tot]*print_output%lenconfac**2
+        end if
       else
         omega%total = wann_spread%om_tot
         !omega_tilde = wann_spread%om_d + wann_spread%om_nu
+        if (present(spread_delta)) then
+          spread_delta = [wann_spread%om_d - old_spread%om_d, &
+                          wann_spread%om_nu - old_spread%om_nu, &
+                          wann_spread%om_tot - old_spread%om_tot]*print_output%lenconfac**2
+        end if
+        if (present(spread_value)) then
+          spread_value = [wann_spread%om_d, wann_spread%om_nu, &
+                          wann_spread%om_tot]*print_output%lenconfac**2
+        end if
       end if
 
 !JJ      if (ldump) then
@@ -2873,7 +2896,7 @@ contains
   !================================================!
   subroutine wann_main_gamma(kmesh_info, wann_control, omega, print_output, wannier_data, &
                              m_matrix, u_matrix, real_lattice, num_kpts, num_wann, stdout, timer, &
-                             error, comm)
+                             error, comm, spread_delta, spread_value)
     !================================================!
     !
     ! Calculate the Unitary Rotations to give
@@ -2906,6 +2929,8 @@ contains
     type(kmesh_info_type), intent(in) :: kmesh_info
     type(timer_list_type), intent(inout) :: timer
     type(w90_error_type), allocatable, intent(out) :: error
+    real(kind=dp), optional, intent(out) :: spread_delta(3)
+    real(kind=dp), optional, intent(out) :: spread_value(3)
 
     integer, intent(in) :: stdout
     integer, intent(in) :: num_wann
@@ -2957,6 +2982,9 @@ contains
     end if
 
     if (print_output%timing_level > 0) call io_stopwatch_start('wann: main_gamma', timer)
+
+    if (present(spread_delta)) spread_delta = 0.0_dp
+    if (present(spread_value)) spread_value = 0.0_dp
 
     first_pass = .true.
 
@@ -3203,6 +3231,15 @@ contains
       ! Public variables
       omega%total = wann_spread%om_tot
       omega%tilde = wann_spread%om_d + wann_spread%om_od
+      if (present(spread_delta)) then
+        spread_delta = [wann_spread%om_d - old_spread%om_d, &
+                        wann_spread%om_od - old_spread%om_od, &
+                        wann_spread%om_tot - old_spread%om_tot]*print_output%lenconfac**2
+      end if
+      if (present(spread_value)) then
+        spread_value = [wann_spread%om_d, wann_spread%om_od, &
+                        wann_spread%om_tot]*print_output%lenconfac**2
+      end if
 
 ! (Jerome Jackson) Removing checkpoint from WF optimisation loop because benefit is limited
 !      if (ldump) then
