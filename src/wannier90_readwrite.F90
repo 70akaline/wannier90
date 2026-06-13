@@ -2105,7 +2105,7 @@ contains
         output_file%write_hr_diag, '|'
       write (stdout, '(1x,a46,10x,L8,13x,a1)') '|  Use guiding centre to control phases      :', &
         wann_control%guiding_centres%enable, '|'
-      write (stdout, '(1x,a46,10x,L8,13x,a1)') '|  Reset CG history after post-step hook     :', &
+      write (stdout, '(1x,a46,10x,L8,13x,a1)') '|  Reset CG after gauge-changing hook        :', &
         wann_control%hook_reset_cg, '|'
       write (stdout, '(1x,a46,10x,L8,13x,a1)') '|  Use phases for initial projections        :', &
         use_bloch_phases, '|'

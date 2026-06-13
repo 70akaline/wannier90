@@ -48,11 +48,12 @@ module w90_wannierise_mod
   public :: wannierise_search_direction_hook
 
   abstract interface
-    subroutine wannierise_post_step_hook(iter, u_matrix, m_matrix_loc, ierr)
+    subroutine wannierise_post_step_hook(iter, u_matrix, m_matrix_loc, gauge_changed, ierr)
       import dp
       integer, intent(in) :: iter
       complex(kind=dp), intent(inout) :: u_matrix(:, :, :)
       complex(kind=dp), intent(inout) :: m_matrix_loc(:, :, :, :)
+      logical, intent(out) :: gauge_changed
       integer, intent(out) :: ierr
     end subroutine wannierise_post_step_hook
     subroutine wannierise_search_direction_hook(iter, search_direction, ierr)
@@ -197,6 +198,7 @@ contains
     integer :: conv_count, noise_count, page_unit
     integer :: i, n, iter, ind, ierr, iw, ncg, nkp, nkp_loc
     integer :: hook_ierr
+    logical :: hook_gauge_changed
     integer :: search_m
     integer :: irguide
     integer :: irpt, loop_kpt
@@ -803,7 +805,8 @@ contains
         if (allocated(error)) return
 
         hook_ierr = 0
-        call post_step_hook(iter, u_matrix, m_matrix_loc, hook_ierr)
+        hook_gauge_changed = .false.
+        call post_step_hook(iter, u_matrix, m_matrix_loc, hook_gauge_changed, hook_ierr)
         if (hook_ierr /= 0) then
           call set_error_fatal(error, 'wann_main: post-step hook returned an error', comm)
           return
@@ -813,7 +816,7 @@ contains
           nkp = global_k(nkp_loc)
           u_matrix_loc(:, :, nkp_loc) = u_matrix(:, :, nkp)
         end do
-        if (wann_control%hook_reset_cg) then
+        if (wann_control%hook_reset_cg .and. hook_gauge_changed) then
           cdqkeep_loc = cmplx_0
           ncg = 0
           noise_count = 0
