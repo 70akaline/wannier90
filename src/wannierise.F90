@@ -453,6 +453,15 @@ contains
 
     ! initialise rguide to projection centres (Cartesians in units of Ang)
     if (wann_control%guiding_centres%enable) then
+      if (.not. allocated(wann_control%guiding_centres%centres)) then
+        call set_error_input(error, 'Error: guiding_centres requested but no guiding centres are available', comm)
+        return
+      end if
+      if (size(wann_control%guiding_centres%centres, 1) < 3 .or. &
+          size(wann_control%guiding_centres%centres, 2) < num_wann) then
+        call set_error_input(error, 'Error: guiding_centres_list has the wrong size', comm)
+        return
+      end if
       do n = 1, num_wann
         call utility_frac_to_cart(wann_control%guiding_centres%centres(:, n), rguide(:, n), &
                                   real_lattice)
@@ -804,10 +813,12 @@ contains
           nkp = global_k(nkp_loc)
           u_matrix_loc(:, :, nkp_loc) = u_matrix(:, :, nkp)
         end do
-        cdqkeep_loc = cmplx_0
-        ncg = 0
-        noise_count = 0
-        lrandom = .false.
+        if (wann_control%hook_reset_cg) then
+          cdqkeep_loc = cmplx_0
+          ncg = 0
+          noise_count = 0
+          lrandom = .false.
+        end if
 
         call wann_omega(csheet, sheet, rave, r2ave, rave2, wann_spread, num_wann, kmesh_info, &
                         num_kpts, print_output, wann_control%use_ss_functional, wann_control%constrain, &
@@ -3186,6 +3197,15 @@ contains
     if (kmesh_info%nntot .eq. 3) wann_control%guiding_centres%enable = .false.
 
     if (wann_control%guiding_centres%enable) then
+      if (.not. allocated(wann_control%guiding_centres%centres)) then
+        call set_error_input(error, 'Error: guiding_centres requested but no guiding centres are available', comm)
+        return
+      end if
+      if (size(wann_control%guiding_centres%centres, 1) < 3 .or. &
+          size(wann_control%guiding_centres%centres, 2) < num_wann) then
+        call set_error_input(error, 'Error: guiding_centres_list has the wrong size', comm)
+        return
+      end if
       do n = 1, num_wann
         call utility_frac_to_cart(wann_control%guiding_centres%centres(:, n), rguide(:, n), &
                                   real_lattice)

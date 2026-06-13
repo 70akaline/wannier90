@@ -200,6 +200,7 @@ module w90_wannier90_types
     real(kind=dp) :: fixed_step = -999.0_dp
     real(kind=dp) :: trial_step = 2.0_dp
     logical :: precond = .false.
+    logical :: hook_reset_cg = .true.
     logical :: lfixstep = .false. ! derived from input
     real(kind=dp) :: conv_noise_amp = -1.0_dp
     integer :: conv_noise_num = 3

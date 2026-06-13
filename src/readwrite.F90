@@ -1307,6 +1307,7 @@ contains
     call clear_block(settings, 'projections', error, comm)
     call clear_block(settings, 'slwf_centres', error, comm)
     call clear_block(settings, 'unit_cell_cart', error, comm)
+    call clear_block(settings, 'guiding_centres_list', error, comm)
     call w90_readwrite_get_keyword(settings, 'auto_projections', found, error, comm)
     call w90_readwrite_get_keyword(settings, 'bands_num_points', found, error, comm)
     call w90_readwrite_get_keyword(settings, 'bands_plot_dim', found, error, comm)
@@ -3093,6 +3094,7 @@ contains
     logical :: found_e, found_s, lconvert
     character(len=maxlen) :: dummy, end_st, start_st
 
+    found = .false.
     found_s = .false.
     found_e = .false.
 

@@ -627,6 +627,7 @@ contains
     ! local variables
     integer :: ierr
     logical :: found
+    real(kind=dp), allocatable :: guide_centres(:, :)
 
     call w90_readwrite_get_keyword(settings, 'num_dump_cycles', found, error, comm, &
                                    i_value=wann_control%num_dump_cycles)
@@ -697,6 +698,37 @@ contains
                                    l_value=wann_control%guiding_centres%enable)
     if (allocated(error)) return
 
+    allocate (guide_centres(3, num_wann), stat=ierr)
+    if (ierr /= 0) then
+      call set_error_alloc(error, 'Error allocating guiding_centres_list in read_wannierise', comm)
+      return
+    end if
+    call w90_readwrite_get_keyword_block(settings, 'guiding_centres_list', found, num_wann, &
+                                         3, 1.0_dp, error, comm, &
+                                         r_value=guide_centres)
+    if (allocated(error)) return
+    if (found) then
+      if (allocated(wann_control%guiding_centres%centres)) then
+        deallocate (wann_control%guiding_centres%centres, stat=ierr)
+        if (ierr /= 0) then
+          call set_error_dealloc(error, 'Error deallocating guiding_centres_list in read_wannierise', comm)
+          return
+        end if
+      end if
+      call move_alloc(guide_centres, wann_control%guiding_centres%centres)
+    else
+      deallocate (guide_centres, stat=ierr)
+      if (ierr /= 0) then
+        call set_error_dealloc(error, 'Error deallocating unused guiding_centres_list in read_wannierise', comm)
+        return
+      end if
+    end if
+
+    if (wann_control%guiding_centres%enable .and. .not. allocated(wann_control%guiding_centres%centres)) then
+      call set_error_input(error, 'Error: guiding_centres requested, but no projections or guiding_centres_list found', comm)
+      return
+    end if
+
     call w90_readwrite_get_keyword(settings, 'use_ss_functional', found, error, comm, &
                                    l_value=wann_control%use_ss_functional)
     if (allocated(error)) return
@@ -740,6 +772,10 @@ contains
 
     call w90_readwrite_get_keyword(settings, 'precond', found, error, comm, &
                                    l_value=wann_control%precond)
+    if (allocated(error)) return
+
+    call w90_readwrite_get_keyword(settings, 'hook_reset_cg', found, error, comm, &
+                                   l_value=wann_control%hook_reset_cg)
     if (allocated(error)) return
 
     wann_control%constrain%slwf_num = num_wann
@@ -2069,6 +2105,8 @@ contains
         output_file%write_hr_diag, '|'
       write (stdout, '(1x,a46,10x,L8,13x,a1)') '|  Use guiding centre to control phases      :', &
         wann_control%guiding_centres%enable, '|'
+      write (stdout, '(1x,a46,10x,L8,13x,a1)') '|  Reset CG history after post-step hook     :', &
+        wann_control%hook_reset_cg, '|'
       write (stdout, '(1x,a46,10x,L8,13x,a1)') '|  Use phases for initial projections        :', &
         use_bloch_phases, '|'
       if (wann_control%guiding_centres%enable .or. print_output%iprint > 2) then
