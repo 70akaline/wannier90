@@ -36,7 +36,25 @@ module w90_disentangle_mod
   implicit none
 
   public :: dis_main
+  public :: disentangle_u_opt_hook
+  public :: disentangle_z_hook
   public :: setup_m_loc
+
+  abstract interface
+    subroutine disentangle_u_opt_hook(iter, u_matrix_opt, ierr)
+      use w90_constants, only: dp
+      integer, intent(in) :: iter
+      complex(kind=dp), intent(inout) :: u_matrix_opt(:, :, :)
+      integer, intent(out) :: ierr
+    end subroutine disentangle_u_opt_hook
+
+    subroutine disentangle_z_hook(iter, z_matrix, ierr)
+      use w90_constants, only: dp
+      integer, intent(in) :: iter
+      complex(kind=dp), intent(inout) :: z_matrix(:, :, :)
+      integer, intent(out) :: ierr
+    end subroutine disentangle_z_hook
+  end interface
 
 contains
   !================================================!
@@ -44,7 +62,7 @@ contains
   subroutine dis_main(dis_control, dis_spheres, dis_manifold, kmesh_info, kpt_latt, sitesym, &
                       print_output, m_matrix_orig_local, u_matrix, u_matrix_opt, eigval, &
                       real_lattice, omega_invariant, num_bands, num_kpts, num_wann, gamma_only, &
-                      lsitesymmetry, stdout, timer, dist_k, error, comm)
+                      lsitesymmetry, stdout, timer, dist_k, error, comm, u_opt_hook, z_hook)
     !================================================!
     !
     !! Main disentanglement routine
@@ -86,10 +104,12 @@ contains
     type(w90_comm_type), intent(in) :: comm
     type(timer_list_type), intent(inout) :: timer
     type(w90_error_type), allocatable, intent(out) :: error
+    procedure(disentangle_u_opt_hook), optional :: u_opt_hook
+    procedure(disentangle_z_hook), optional :: z_hook
 
     ! internal variables
     real(kind=dp) :: recip_lattice(3, 3), volume
-    integer :: nkp, nkp2, nn, j, ierr, nkp_global
+    integer :: nkp, nkp2, nn, j, ierr, nkp_global, hook_ierr
     logical :: linner                         !! Is there a frozen window
     logical :: lfrozen(num_bands, num_kpts)   !! true if the i-th band inside outer window is frozen
     integer :: ndimfroz(num_kpts)             !! number of frozen bands at nkp-th k point
@@ -213,6 +233,15 @@ contains
       if (allocated(error)) return
     end if
 
+    if (present(u_opt_hook)) then
+      hook_ierr = 0
+      call u_opt_hook(0, u_matrix_opt, hook_ierr)
+      if (hook_ierr /= 0) then
+        call set_error_fatal(error, 'dis_main: u_matrix_opt hook returned an error', comm)
+        return
+      end if
+    end if
+
     !RS: calculate initial U_{opt}(Rk) from U_{opt}(k)
     ! Extract the optimally-connected num_wann-dimensional subspaces
 
@@ -226,7 +255,7 @@ contains
       call dis_extract(dis_control, kmesh_info, sitesym, print_output, dis_manifold, &
                        m_matrix_orig_local, u_matrix_opt, eigval_opt, omega_invariant, indxnfroz, &
                        ndimfroz, my_node_id, num_bands, num_kpts, num_wann, lsitesymmetry, timer, &
-                       nkrank, global_k, error, stdout, comm)
+                       nkrank, global_k, error, stdout, comm, u_opt_hook, z_hook)
       if (allocated(error)) return
     end if
 
@@ -2320,7 +2349,7 @@ contains
   subroutine dis_extract(dis_control, kmesh_info, sitesym, print_output, dis_manifold, &
                          m_matrix_orig_local, u_matrix_opt, eigval_opt, omega_invariant, &
                          indxnfroz, ndimfroz, my_node_id, num_bands, num_kpts, num_wann, &
-                         lsitesymmetry, timer, ranknk, global_k, error, stdout, comm)
+                         lsitesymmetry, timer, ranknk, global_k, error, stdout, comm, u_opt_hook, z_hook)
     !================================================!
     !
     !! Extracts an num_wann-dimensional subspace at each k by
@@ -2381,6 +2410,8 @@ contains
     type(timer_list_type), intent(inout) :: timer
     type(w90_comm_type), intent(in) :: comm
     type(w90_error_type), allocatable, intent(out) :: error
+    procedure(disentangle_u_opt_hook), optional :: u_opt_hook
+    procedure(disentangle_z_hook), optional :: z_hook
 
     integer, intent(in) :: my_node_id
     integer, intent(in) :: stdout
@@ -2398,8 +2429,8 @@ contains
     logical, intent(in) :: lsitesymmetry
 
     ! Internal variables
-    integer :: i, j, l, m, n, nn, nkp, nkp2, info, ierr, ndimk, p
-    integer :: icompflag, iter, ndiff
+    integer :: i, j, l, m, n, nn, nkp, nkp2, info, ierr, ndimk, p, q
+    integer :: icompflag, iter, ndiff, hook_ierr
     real(kind=dp) :: womegai, wkomegai, womegai1, rsum, delta_womegai
     real(kind=dp), allocatable :: wkomegai1(:)
     real(kind=dp), allocatable :: history(:)
@@ -2515,7 +2546,7 @@ contains
       call set_error_alloc(error, 'Error allocating wkomegai1 in dis_extract', comm)
       return
     end if
-    if (lsitesymmetry) then !we only need these large arrays for the symmetry code
+    if (lsitesymmetry .or. present(z_hook)) then !we only need these large arrays for symmetry/hook code
       allocate (czmat_in(num_bands, num_bands, num_kpts), stat=ierr)
       if (ierr /= 0) then
         call set_error_alloc(error, 'Error allocating czmat_in in dis_extract', comm)
@@ -2534,6 +2565,8 @@ contains
     end if
 
     cwb = cmplx_0; cww = cmplx_0; cbw = cmplx_0
+    czmat_in_loc = cmplx_0
+    czmat_out_loc = cmplx_0
 
     ! Copy matrix elements from global U matrix to local U matrix
     do nkp_loc = 1, ranknk
@@ -2652,6 +2685,45 @@ contains
                   + cmplx(1.0_dp - dis_control%mix_ratio, 0.0_dp, dp)*czmat_in_loc(j, i, nkp_loc)
                 ! hermiticity
                 czmat_in_loc(i, j, nkp_loc) = conjg(czmat_in_loc(j, i, nkp_loc))
+              end do
+            end do
+          end if
+        end do
+	      end if
+
+      if (present(z_hook)) then
+        czmat_in = cmplx_0
+        do nkp_loc = 1, ranknk
+          nkp = global_k(nkp_loc)
+          if (num_wann .gt. ndimfroz(nkp)) then
+            ndimk = dis_manifold%ndimwin(nkp) - ndimfroz(nkp)
+            do i = 1, ndimk
+              p = indxnfroz(i, nkp)
+              do j = 1, ndimk
+                q = indxnfroz(j, nkp)
+                czmat_in(p, q, nkp) = czmat_in_loc(i, j, nkp_loc)
+              end do
+            end do
+          end if
+        end do
+        call comms_allreduce(czmat_in(1, 1, 1), num_bands*num_bands*num_kpts, 'SUM', error, comm)
+        if (allocated(error)) return
+        hook_ierr = 0
+        call z_hook(iter, czmat_in, hook_ierr)
+        if (hook_ierr /= 0) then
+          call set_error_fatal(error, 'dis_extract: Z-matrix hook returned an error', comm)
+          return
+        end if
+        do nkp_loc = 1, ranknk
+          nkp = global_k(nkp_loc)
+          czmat_in_loc(:, :, nkp_loc) = cmplx_0
+          if (num_wann .gt. ndimfroz(nkp)) then
+            ndimk = dis_manifold%ndimwin(nkp) - ndimfroz(nkp)
+            do i = 1, ndimk
+              p = indxnfroz(i, nkp)
+              do j = 1, ndimk
+                q = indxnfroz(j, nkp)
+                czmat_in_loc(i, j, nkp_loc) = czmat_in(p, q, nkp)
               end do
             end do
           end if
@@ -2840,6 +2912,19 @@ contains
         end do
       end if
 
+      if (present(u_opt_hook)) then
+        hook_ierr = 0
+        call u_opt_hook(iter, u_matrix_opt, hook_ierr)
+        if (hook_ierr /= 0) then
+          call set_error_fatal(error, 'dis_extract: u_matrix_opt hook returned an error', comm)
+          return
+        end if
+        do nkp_loc = 1, ranknk
+          nkp = global_k(nkp_loc)
+          u_matrix_opt_loc(:, :, nkp_loc) = u_matrix_opt(:, :, nkp)
+        end do
+      end if
+
       if (print_output%timing_level > 1) call io_stopwatch_stop('dis: extract_3', timer)
 
       womegai1 = womegai1/real(num_kpts, dp)
@@ -2945,6 +3030,45 @@ contains
         end do
       end if
 
+      if (present(z_hook)) then
+        czmat_out = cmplx_0
+        do nkp_loc = 1, ranknk
+          nkp = global_k(nkp_loc)
+          if (num_wann .gt. ndimfroz(nkp)) then
+            ndimk = dis_manifold%ndimwin(nkp) - ndimfroz(nkp)
+            do i = 1, ndimk
+              p = indxnfroz(i, nkp)
+              do j = 1, ndimk
+                q = indxnfroz(j, nkp)
+                czmat_out(p, q, nkp) = czmat_out_loc(i, j, nkp_loc)
+              end do
+            end do
+          end if
+        end do
+        call comms_allreduce(czmat_out(1, 1, 1), num_bands*num_bands*num_kpts, 'SUM', error, comm)
+        if (allocated(error)) return
+        hook_ierr = 0
+        call z_hook(-iter, czmat_out, hook_ierr)
+        if (hook_ierr /= 0) then
+          call set_error_fatal(error, 'dis_extract: Z-matrix output hook returned an error', comm)
+          return
+        end if
+        do nkp_loc = 1, ranknk
+          nkp = global_k(nkp_loc)
+          czmat_out_loc(:, :, nkp_loc) = cmplx_0
+          if (num_wann .gt. ndimfroz(nkp)) then
+            ndimk = dis_manifold%ndimwin(nkp) - ndimfroz(nkp)
+            do i = 1, ndimk
+              p = indxnfroz(i, nkp)
+              do j = 1, ndimk
+                q = indxnfroz(j, nkp)
+                czmat_out_loc(i, j, nkp_loc) = czmat_out(p, q, nkp)
+              end do
+            end do
+          end if
+        end do
+      end if
+
       call internal_test_convergence(history, delta_womegai, dis_control%conv_tol, iter, &
                                      dis_control%conv_window, dis_converged, error, comm)
       if (allocated(error)) return
@@ -2961,7 +3085,7 @@ contains
     end do
     ! [BIG ITERATION LOOP (iter)]
 
-    if (lsitesymmetry) then
+    if (lsitesymmetry .or. present(z_hook)) then
       deallocate (czmat_out, stat=ierr)
       if (ierr /= 0) then
         call set_error_dealloc(error, 'Error deallocating czmat_out in dis_extract', comm)

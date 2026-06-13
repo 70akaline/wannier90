@@ -44,6 +44,24 @@ module w90_wannierise_mod
 
   public :: wann_main
   public :: wann_main_gamma
+  public :: wannierise_post_step_hook
+  public :: wannierise_search_direction_hook
+
+  abstract interface
+    subroutine wannierise_post_step_hook(iter, u_matrix, m_matrix_loc, ierr)
+      import dp
+      integer, intent(in) :: iter
+      complex(kind=dp), intent(inout) :: u_matrix(:, :, :)
+      complex(kind=dp), intent(inout) :: m_matrix_loc(:, :, :, :)
+      integer, intent(out) :: ierr
+    end subroutine wannierise_post_step_hook
+    subroutine wannierise_search_direction_hook(iter, search_direction, ierr)
+      import dp
+      integer, intent(in) :: iter
+      complex(kind=dp), intent(inout) :: search_direction(:, :, :)
+      integer, intent(out) :: ierr
+    end subroutine wannierise_search_direction_hook
+  end interface
 
   type localisation_vars_type
     !! Contributions to the spread
@@ -63,7 +81,8 @@ contains
                        m_matrix_loc, u_matrix, real_lattice, wannier_centres_translated, irvec, &
                        mp_grid, ndegen, nrpts, num_kpts, num_proj, num_wann, optimisation, &
                        rpt_origin, bands_plot_mode, transport_mode, lsitesymmetry, stdout, &
-                       timer, dist_k, error, comm, spread_delta, spread_value)
+                       timer, dist_k, error, comm, spread_delta, spread_value, post_step_hook, &
+                       search_direction_hook)
     !================================================!
     !
     !! Calculate the Unitary Rotations to give Maximally Localised Wannier Functions
@@ -97,6 +116,8 @@ contains
     type(w90_error_type), allocatable, intent(out) :: error
     real(kind=dp), optional, intent(out) :: spread_delta(3)
     real(kind=dp), optional, intent(out) :: spread_value(3)
+    procedure(wannierise_post_step_hook), optional :: post_step_hook
+    procedure(wannierise_search_direction_hook), optional :: search_direction_hook
 
     integer, intent(in) :: mp_grid(3)
     integer, intent(in) :: num_kpts
@@ -175,6 +196,8 @@ contains
     complex(kind=dp) :: rdotk
     integer :: conv_count, noise_count, page_unit
     integer :: i, n, iter, ind, ierr, iw, ncg, nkp, nkp_loc
+    integer :: hook_ierr
+    integer :: search_m
     integer :: irguide
     integer :: irpt, loop_kpt
     integer :: nkrank
@@ -184,6 +207,7 @@ contains
     real(kind=dp) :: falphamin, alphamin
     real(kind=dp) :: gcfac, gcnorm1, gcnorm0
     real(kind=dp) :: save_spread
+    complex(kind=dp) :: search_zres
 
     ! pllel setup
     logical :: on_root = .false.
@@ -598,6 +622,11 @@ contains
                                       wann_spread, num_wann, num_kpts, kpt_latt, real_lattice, &
                                       nrpts, irvec, ndegen, optimisation, timer)
       end if
+      if (present(search_direction_hook)) then
+        cdqkeep_loc(:, :, :) = cmplx_0
+        ncg = 0
+        gcfac = 0.0_dp
+      end if
       call internal_search_direction(cdodq_precond_loc, cdqkeep_loc, iter, lprint, lrandom, &
                                      noise_count, ncg, gcfac, gcnorm0, gcnorm1, doda0, &
                                      wann_control, num_wann, kmesh_info%wbtot, cdq_loc, cdodq_loc, &
@@ -606,6 +635,43 @@ contains
 
       if (lsitesymmetry) then
         call sitesym_symmetrize_gradient(sitesym, cdq, 2, num_kpts, num_wann, error, comm)
+      end if
+
+      if (present(search_direction_hook)) then
+        cdq(:, :, :) = 0.0_dp
+        do nkp_loc = 1, nkrank
+          nkp = global_k(nkp_loc)
+          cdq(:, :, nkp) = cdq_loc(:, :, nkp_loc)
+        end do
+        call comms_allreduce(cdq(1, 1, 1), num_wann*num_wann*num_kpts, 'SUM', error, comm)
+        if (allocated(error)) return
+
+        hook_ierr = 0
+        call search_direction_hook(iter, cdq, hook_ierr)
+        if (hook_ierr /= 0) then
+          call set_error_fatal(error, 'wann_main: search-direction hook returned an error', comm)
+          return
+        end if
+
+        do nkp_loc = 1, nkrank
+          nkp = global_k(nkp_loc)
+          cdq_loc(:, :, nkp_loc) = cdq(:, :, nkp)
+        end do
+
+        search_m = nkrank*num_wann*num_wann
+        call zgemv('c', search_m, 1, cmplx_1, cdodq_loc, search_m, cdq_loc, 1, cmplx_0, search_zres, 1)
+        doda0 = -real(search_zres, dp)
+        call comms_allreduce(doda0, 1, 'SUM', error, comm)
+        if (allocated(error)) return
+        doda0 = doda0/(4.0_dp*kmesh_info%wbtot)
+        if (doda0 .gt. 0.0_dp) then
+          if (lprint .and. print_output%iprint > 2 .and. print_output%iprint > 0) &
+            write (stdout, *) ' LINE --> Hooked search direction uphill: reversing'
+          cdq_loc(:, :, :) = -cdq_loc(:, :, :)
+          doda0 = -doda0
+          ncg = 0
+          gcfac = 0.0_dp
+        end if
       end if
 
       ! save search direction
@@ -716,6 +782,38 @@ contains
         call wann_spread_copy(wann_spread, old_spread)
         call wann_spread_copy(trial_spread, wann_spread)
 
+      end if
+
+      if (present(post_step_hook)) then
+        u_matrix(:, :, :) = 0.0_dp
+        do nkp_loc = 1, nkrank
+          nkp = global_k(nkp_loc)
+          u_matrix(:, :, nkp) = u_matrix_loc(:, :, nkp_loc)
+        end do
+        call comms_allreduce(u_matrix(1, 1, 1), num_wann*num_wann*num_kpts, 'SUM', error, comm)
+        if (allocated(error)) return
+
+        hook_ierr = 0
+        call post_step_hook(iter, u_matrix, m_matrix_loc, hook_ierr)
+        if (hook_ierr /= 0) then
+          call set_error_fatal(error, 'wann_main: post-step hook returned an error', comm)
+          return
+        end if
+
+        do nkp_loc = 1, nkrank
+          nkp = global_k(nkp_loc)
+          u_matrix_loc(:, :, nkp_loc) = u_matrix(:, :, nkp)
+        end do
+        cdqkeep_loc = cmplx_0
+        ncg = 0
+        noise_count = 0
+        lrandom = .false.
+
+        call wann_omega(csheet, sheet, rave, r2ave, rave2, wann_spread, num_wann, kmesh_info, &
+                        num_kpts, print_output, wann_control%use_ss_functional, wann_control%constrain, &
+                        omega%invariant, ln_tmp_loc, m_matrix_loc, lambda_loc, first_pass, timer, &
+                        nkrank, global_k, error, comm)
+        if (allocated(error)) return
       end if
 
       ! print the new centers and spreads

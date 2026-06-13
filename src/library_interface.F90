@@ -193,6 +193,10 @@ module w90_library
   ! this is called by get_nnkp and get_gkpb
   public :: w90_disentangle
   !! perform disentanglement
+  public :: w90_disentangle_with_hook
+  !! perform disentanglement with a u_matrix_opt callback
+  public :: w90_disentangle_with_z_hook
+  !! perform disentanglement with a Z-matrix callback
   public :: w90_distribute_kpts
   !! provides an MPI k-point distribution for codes that don't have one
   public :: w90_get_centres
@@ -249,6 +253,10 @@ module w90_library
   !! perform transport functions
   public :: w90_wannierise
   !! perform wannierisation
+  public :: w90_wannierise_with_hook
+  !! perform wannierisation with a post-step callback
+  public :: w90_wannierise_with_search_hook
+  !! perform wannierisation with a search-direction callback
   public :: w90_wannierise_one_step
   !! diagnostic wrapper: run exactly one MLWF iteration through the normal driver
   public :: w90_update_m_local_from_u
@@ -542,11 +550,11 @@ contains
     if (allocated(common_data%settings%in_data)) deallocate (common_data%settings%in_data)
   end subroutine w90_input_reader
 
-  subroutine w90_disentangle(common_data, istdout, istderr, ierr)
+  subroutine w90_disentangle(common_data, istdout, istderr, ierr, u_opt_hook, z_hook)
     !! perform disentanglement; assumes library data object is already setup after w90_input_setopt() call
     !! no effect if number of bands == number of WF
 
-    use w90_disentangle_mod, only: dis_main, setup_m_loc
+    use w90_disentangle_mod, only: dis_main, setup_m_loc, disentangle_u_opt_hook, disentangle_z_hook
     use w90_error_base, only: w90_error_type
     use w90_error, only: set_error_fatal
     use w90_overlap, only: overlap_write
@@ -557,6 +565,8 @@ contains
     type(lib_common_type), intent(inout) :: common_data
     integer, intent(in) :: istdout, istderr
     integer, intent(out) :: ierr
+    procedure(disentangle_u_opt_hook), optional :: u_opt_hook
+    procedure(disentangle_z_hook), optional :: z_hook
 
     ! local variables
     type(w90_error_type), allocatable :: error
@@ -606,7 +616,8 @@ contains
                     common_data%u_matrix_opt, common_data%eigval, common_data%real_lattice, &
                     common_data%omega%invariant, common_data%num_bands, common_data%num_kpts, &
                     common_data%num_wann, common_data%gamma_only, common_data%lsitesymmetry, &
-                    istdout, common_data%timer, common_data%dist_kpoints, error, common_data%comm)
+                    istdout, common_data%timer, common_data%dist_kpoints, error, common_data%comm, &
+                    u_opt_hook=u_opt_hook, z_hook=z_hook)
       if (allocated(error)) then
         call prterr(error, ierr, istdout, istderr, common_data%comm)
         return
@@ -624,6 +635,30 @@ contains
       common_data%have_disentangled = .true.
     end if
   end subroutine w90_disentangle
+
+  subroutine w90_disentangle_with_hook(common_data, istdout, istderr, ierr, u_opt_hook)
+    use w90_disentangle_mod, only: disentangle_u_opt_hook
+    implicit none
+
+    type(lib_common_type), intent(inout) :: common_data
+    integer, intent(in) :: istdout, istderr
+    integer, intent(out) :: ierr
+    procedure(disentangle_u_opt_hook) :: u_opt_hook
+
+    call w90_disentangle(common_data, istdout, istderr, ierr, u_opt_hook=u_opt_hook)
+  end subroutine w90_disentangle_with_hook
+
+  subroutine w90_disentangle_with_z_hook(common_data, istdout, istderr, ierr, z_hook)
+    use w90_disentangle_mod, only: disentangle_z_hook
+    implicit none
+
+    type(lib_common_type), intent(inout) :: common_data
+    integer, intent(in) :: istdout, istderr
+    integer, intent(out) :: ierr
+    procedure(disentangle_z_hook) :: z_hook
+
+    call w90_disentangle(common_data, istdout, istderr, ierr, z_hook=z_hook)
+  end subroutine w90_disentangle_with_z_hook
 
   subroutine w90_project_overlap(common_data, istdout, istderr, ierr)
     use w90_error_base, only: w90_error_type
@@ -772,6 +807,126 @@ contains
       return
     end if
   end subroutine w90_wannierise
+
+  subroutine w90_wannierise_with_hook(common_data, istdout, istderr, ierr, post_step_hook, &
+                                      spread_delta, spread_value)
+    use w90_comms, only: mpirank, comms_sync_error
+    use w90_error_base, only: w90_error_type
+    use w90_error, only: set_error_fatal
+    use w90_wannierise_mod, only: wann_main, wann_main_gamma, wannierise_post_step_hook
+    use w90_overlap, only: overlap_write
+
+    implicit none
+
+    type(lib_common_type), intent(inout) :: common_data
+    integer, intent(in) :: istdout, istderr
+    integer, intent(out) :: ierr
+    procedure(wannierise_post_step_hook) :: post_step_hook
+    real(kind=dp), optional, intent(out) :: spread_delta(3)
+    real(kind=dp), optional, intent(out) :: spread_value(3)
+
+    type(w90_error_type), allocatable :: error
+
+    ierr = 0
+    if (present(spread_delta)) spread_delta = 0.0_dp
+    if (present(spread_value)) spread_value = 0.0_dp
+
+    if (.not. associated(common_data%m_matrix_local)) then
+      call set_error_fatal(error, 'Error: m_matrix_local not set for call to w90_wannierise_with_hook()', common_data%comm)
+    else if (.not. associated(common_data%u_matrix)) then
+      call set_error_fatal(error, 'Error: u_matrix not set for w90_wannierise_with_hook()', common_data%comm)
+    end if
+    if (allocated(error)) then
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+
+    if (common_data%output_file%write_win_ammats .and. .not. common_data%have_disentangled) then
+      call overlap_write(common_data%kmesh_info, common_data%u_matrix_opt, common_data%m_matrix_local, &
+                         common_data%eigval, common_data%num_bands, common_data%num_kpts, common_data%num_wann, &
+                         common_data%num_proj, common_data%seedname, error, common_data%comm)
+    end if
+
+    if (common_data%gamma_only) then
+      call set_error_fatal(error, 'w90_wannierise_with_hook is not implemented for gamma-only mode', common_data%comm)
+    else
+      call wann_main(common_data%ham_logical, common_data%kmesh_info, common_data%kpt_latt, &
+                     common_data%wann_control, common_data%omega, common_data%sitesym, &
+                     common_data%print_output, common_data%wannier_data, common_data%ws_region, &
+                     common_data%w90_calculation, common_data%ham_k, common_data%ham_r, &
+                     common_data%m_matrix_local, common_data%u_matrix, common_data%real_lattice, &
+                     common_data%wannier_centres_translated, common_data%irvec, &
+                     common_data%mp_grid, common_data%ndegen, common_data%nrpts, &
+                     common_data%num_kpts, common_data%num_proj, common_data%num_wann, &
+                     common_data%optimisation, common_data%rpt_origin, common_data%band_plot%mode, &
+                     common_data%tran%mode, common_data%lsitesymmetry, istdout, common_data%timer, &
+                     common_data%dist_kpoints, error, common_data%comm, spread_delta, spread_value, post_step_hook)
+    end if
+    if (allocated(error)) then
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+  end subroutine w90_wannierise_with_hook
+
+  subroutine w90_wannierise_with_search_hook(common_data, istdout, istderr, ierr, search_direction_hook, &
+                                             spread_delta, spread_value)
+    use w90_error_base, only: w90_error_type
+    use w90_error, only: set_error_fatal
+    use w90_wannierise_mod, only: wann_main, wannierise_search_direction_hook
+    use w90_overlap, only: overlap_write
+
+    implicit none
+
+    type(lib_common_type), intent(inout) :: common_data
+    integer, intent(in) :: istdout, istderr
+    integer, intent(out) :: ierr
+    procedure(wannierise_search_direction_hook) :: search_direction_hook
+    real(kind=dp), optional, intent(out) :: spread_delta(3)
+    real(kind=dp), optional, intent(out) :: spread_value(3)
+
+    type(w90_error_type), allocatable :: error
+
+    ierr = 0
+    if (present(spread_delta)) spread_delta = 0.0_dp
+    if (present(spread_value)) spread_value = 0.0_dp
+
+    if (.not. associated(common_data%m_matrix_local)) then
+      call set_error_fatal(error, 'Error: m_matrix_local not set for call to w90_wannierise_with_search_hook()', common_data%comm)
+    else if (.not. associated(common_data%u_matrix)) then
+      call set_error_fatal(error, 'Error: u_matrix not set for w90_wannierise_with_search_hook()', common_data%comm)
+    end if
+    if (allocated(error)) then
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+
+    if (common_data%output_file%write_win_ammats .and. .not. common_data%have_disentangled) then
+      call overlap_write(common_data%kmesh_info, common_data%u_matrix_opt, common_data%m_matrix_local, &
+                         common_data%eigval, common_data%num_bands, common_data%num_kpts, common_data%num_wann, &
+                         common_data%num_proj, common_data%seedname, error, common_data%comm)
+    end if
+
+    if (common_data%gamma_only) then
+      call set_error_fatal(error, 'w90_wannierise_with_search_hook is not implemented for gamma-only mode', common_data%comm)
+    else
+      call wann_main(common_data%ham_logical, common_data%kmesh_info, common_data%kpt_latt, &
+                     common_data%wann_control, common_data%omega, common_data%sitesym, &
+                     common_data%print_output, common_data%wannier_data, common_data%ws_region, &
+                     common_data%w90_calculation, common_data%ham_k, common_data%ham_r, &
+                     common_data%m_matrix_local, common_data%u_matrix, common_data%real_lattice, &
+                     common_data%wannier_centres_translated, common_data%irvec, &
+                     common_data%mp_grid, common_data%ndegen, common_data%nrpts, &
+                     common_data%num_kpts, common_data%num_proj, common_data%num_wann, &
+                     common_data%optimisation, common_data%rpt_origin, common_data%band_plot%mode, &
+                     common_data%tran%mode, common_data%lsitesymmetry, istdout, common_data%timer, &
+                     common_data%dist_kpoints, error, common_data%comm, spread_delta, spread_value, &
+                     search_direction_hook=search_direction_hook)
+    end if
+    if (allocated(error)) then
+      call prterr(error, ierr, istdout, istderr, common_data%comm)
+      return
+    end if
+  end subroutine w90_wannierise_with_search_hook
 
   subroutine w90_wannierise_one_step(common_data, istdout, istderr, ierr, spread_delta, spread_value, &
                                      conv_tol, conv_window)
