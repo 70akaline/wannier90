@@ -670,7 +670,11 @@ contains
         end do
 
         search_m = nkrank*num_wann*num_wann
-        call zgemv('c', search_m, 1, cmplx_1, cdodq_loc, search_m, cdq_loc, 1, cmplx_0, search_zres, 1)
+        if (search_m > 0) then
+          call zgemv('c', search_m, 1, cmplx_1, cdodq_loc, search_m, cdq_loc, 1, cmplx_0, search_zres, 1)
+        else
+          search_zres = cmplx_0
+        end if
         doda0 = -real(search_zres, dp)
         call comms_allreduce(doda0, 1, 'SUM', error, comm)
         if (allocated(error)) return
@@ -1567,11 +1571,19 @@ contains
       ! gcnorm1 = Tr[gradient . gradient] -- NB gradient is anti-Hermitian
       if (wann_control%precond) then
         ! compute (zdotc) cdodq_precond_loc.cdodq_loc^c
-        call zgemv('c', m, 1, cmplx_1, cdodq_precond_loc, m, cdodq_loc, 1, cmplx_0, zres, 1)
+        if (m > 0) then
+          call zgemv('c', m, 1, cmplx_1, cdodq_precond_loc, m, cdodq_loc, 1, cmplx_0, zres, 1)
+        else
+          zres = cmplx_0
+        end if
         gcnorm1 = real(zres, dp)
       else
         ! compute (zdotc) cdodq_loc.cdodq_loc^c
-        call zgemv('c', m, 1, cmplx_1, cdodq_loc, m, cdodq_loc, 1, cmplx_0, zres, 1)
+        if (m > 0) then
+          call zgemv('c', m, 1, cmplx_1, cdodq_loc, m, cdodq_loc, 1, cmplx_0, zres, 1)
+        else
+          zres = cmplx_0
+        end if
         gcnorm1 = real(zres, dp)
       end if
       call comms_allreduce(gcnorm1, 1, 'SUM', error, comm)
@@ -1620,7 +1632,11 @@ contains
       ! calculate gradient along search direction - Tr[gradient . search direction]
       ! NB gradient is anti-hermitian
       ! compute (zdotc) cdodq_loc.cdq_loc^c
-      call zgemv('c', m, 1, cmplx_1, cdodq_loc, m, cdq_loc, 1, cmplx_0, zres, 1)
+      if (m > 0) then
+        call zgemv('c', m, 1, cmplx_1, cdodq_loc, m, cdq_loc, 1, cmplx_0, zres, 1)
+      else
+        zres = cmplx_0
+      end if
       doda0 = -real(zres, dp)
 
       call comms_allreduce(doda0, 1, 'SUM', error, comm)
@@ -1643,7 +1659,11 @@ contains
 
           ! re-calculate gradient along search direction
           ! compute (zdotc) cdodq_loc.cdq_loc^c
-          call zgemv('c', m, 1, cmplx_1, cdodq_loc, m, cdq_loc, 1, cmplx_0, zres, 1)
+          if (m > 0) then
+            call zgemv('c', m, 1, cmplx_1, cdodq_loc, m, cdq_loc, 1, cmplx_0, zres, 1)
+          else
+            zres = cmplx_0
+          end if
           doda0 = -real(zres, dp)
 
           call comms_allreduce(doda0, 1, 'SUM', error, comm)
