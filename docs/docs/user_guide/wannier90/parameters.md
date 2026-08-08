@@ -871,6 +871,15 @@ give a more accurate line search.
 
 The default value is 2.0
 
+### `logical :: monotonic_line_search`
+
+If `true`, a line-search step that increases the actual spread is
+rejected and retried with half the step length. After a backtrack, the
+conjugate-gradient history is reset. This safeguard applies only to the
+line-search minimisation; it does not alter `fixed_step` calculations.
+
+The default value is `false`.
+
 ### `real(kind=dp) :: fixed_step`
 
 If this is given a value in the input file, then a fixed step of length

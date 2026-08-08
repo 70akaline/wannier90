@@ -774,6 +774,10 @@ contains
                                    l_value=wann_control%precond)
     if (allocated(error)) return
 
+    call w90_readwrite_get_keyword(settings, 'monotonic_line_search', found, error, comm, &
+                                   l_value=wann_control%monotonic_line_search)
+    if (allocated(error)) return
+
     call w90_readwrite_get_keyword(settings, 'hook_reset_cg', found, error, comm, &
                                    l_value=wann_control%hook_reset_cg)
     if (allocated(error)) return
@@ -2089,6 +2093,9 @@ contains
         write (stdout, '(1x,a46,10x,f8.3,13x,a1)') '|  Trial step length for line search         :', &
           wann_control%trial_step, '|'
       end if
+      if (wann_control%monotonic_line_search) &
+        write (stdout, '(1x,a46,10x,L8,13x,a1)') '|  Monotonic line-search backtracking        :', &
+          wann_control%monotonic_line_search, '|'
       write (stdout, '(1x,a46,8x,E10.3,13x,a1)') '|  Convergence tolerence                     :', &
         wann_control%conv_tol, '|'
       write (stdout, '(1x,a46,10x,I8,13x,a1)') '|  Convergence window                        :', &

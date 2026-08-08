@@ -1346,6 +1346,7 @@ contains
     call w90_readwrite_get_keyword(settings, 'fermi_surface_plot_format', found, error, comm)
     call w90_readwrite_get_keyword(settings, 'fermi_surface_plot', found, error, comm)
     call w90_readwrite_get_keyword(settings, 'fixed_step', found, error, comm)
+    call w90_readwrite_get_keyword(settings, 'monotonic_line_search', found, error, comm)
     call w90_readwrite_get_keyword(settings, 'gamma_only', found, error, comm)
     call w90_readwrite_get_keyword(settings, 'guiding_centres', found, error, comm)
     call w90_readwrite_get_keyword(settings, 'higher_order_n', found, error, comm)

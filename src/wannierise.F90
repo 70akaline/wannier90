@@ -195,8 +195,10 @@ contains
 
     integer, allocatable :: global_k(:)
     complex(kind=dp) :: rdotk
+    real(kind=dp) :: spread_guard_tol
     integer :: conv_count, noise_count, page_unit
     integer :: i, n, iter, ind, ierr, iw, ncg, nkp, nkp_loc
+    integer :: line_search_backtracks
     integer :: hook_ierr
     logical :: hook_gauge_changed
     integer :: search_m
@@ -757,22 +759,17 @@ contains
         write (stdout, *) ' LINE --> CG coefficient                :', gcfac
       end if
 
-      ! if taking a fixed step or if parabolic line search was successful
-      if (wann_control%lfixstep .or. lquad) then
+      call wann_spread_copy(wann_spread, old_spread)
 
-        ! take optimal step
+      ! Fixed steps retain their historical behavior.  For line searches,
+      ! always rebuild the candidate from the saved initial gauge and reject
+      ! any step that increases the actual spread.  The parabolic model can
+      ! be inaccurate far from its trial point, especially with a
+      ! preconditioned CG direction.
+      if (wann_control%lfixstep) then
+
+        ! take fixed step
         cdq_loc(:, :, :) = cdqkeep_loc(:, :, :)*(alphamin/(4.0_dp*kmesh_info%wbtot))
-
-        ! if doing a line search then restore original U and M before rotating
-        if (.not. wann_control%lfixstep) then
-          u_matrix_loc = u0_loc
-          if (optimisation <= 0) then
-            read (page_unit) m_matrix_loc
-            rewind (page_unit)
-          else
-            m_matrix_loc = m0_loc
-          end if
-        end if
 
         ! update U and M
         call internal_new_u_and_m(cdq, cmtmp, tmp_cdq, cwork, rwork, evals, cwschur1, cwschur2, &
@@ -782,8 +779,6 @@ contains
                                   global_k, error, comm)
         if (allocated(error)) return
 
-        call wann_spread_copy(wann_spread, old_spread)
-
         ! calculate the new centers and spread
         call wann_omega(csheet, sheet, rave, r2ave, rave2, wann_spread, num_wann, kmesh_info, &
                         num_kpts, print_output, wann_control%use_ss_functional, wann_control%constrain, &
@@ -791,10 +786,93 @@ contains
                         nkrank, global_k, error, comm)
         if (allocated(error)) return
 
-        ! parabolic line search was unsuccessful, use trial step already taken
+      else if (wann_control%monotonic_line_search) then
+
+        line_search_backtracks = 0
+        do
+          ! Restore the gauge at the start of the line search before every
+          ! candidate, including the first parabolic or trial step.
+          u_matrix_loc = u0_loc
+          if (optimisation <= 0) then
+            read (page_unit) m_matrix_loc
+            rewind (page_unit)
+          else
+            m_matrix_loc = m0_loc
+          end if
+
+          cdq_loc(:, :, :) = cdqkeep_loc(:, :, :)*(alphamin/(4.0_dp*kmesh_info%wbtot))
+
+          ! update U and M
+          call internal_new_u_and_m(cdq, cmtmp, tmp_cdq, cwork, rwork, evals, cwschur1, cwschur2, &
+                                    cwschur3, cwschur4, cz, num_wann, num_kpts, kmesh_info, &
+                                    lsitesymmetry, cdq_loc, u_matrix_loc, m_matrix_loc, &
+                                    print_output%timing_level, stdout, sitesym, timer, nkrank, &
+                                    global_k, error, comm)
+          if (allocated(error)) return
+
+          ! calculate the new centers and spread
+          call wann_omega(csheet, sheet, rave, r2ave, rave2, wann_spread, num_wann, kmesh_info, &
+                          num_kpts, print_output, wann_control%use_ss_functional, wann_control%constrain, &
+                          omega%invariant, ln_tmp_loc, m_matrix_loc, lambda_loc, first_pass, timer, &
+                          nkrank, global_k, error, comm)
+          if (allocated(error)) return
+
+          ! Ignore only round-off-level changes near convergence.  The scale
+          ! factor is deliberately tied to machine precision, not a user
+          ! convergence tolerance, so physically visible spread increases
+          ! still trigger backtracking.
+          spread_guard_tol = 64.0_dp*epsilon(1.0_dp)*max(1.0_dp, abs(old_spread%om_tot))
+          if (wann_spread%om_tot <= old_spread%om_tot + spread_guard_tol) exit
+          if (line_search_backtracks >= 12) exit
+
+          line_search_backtracks = line_search_backtracks + 1
+          if (line_search_backtracks >= 12) then
+            alphamin = 0.0_dp
+          else
+            alphamin = 0.5_dp*alphamin
+          end if
+        end do
+
+        if (line_search_backtracks > 0) then
+          ! The rejected CG direction must not seed the next iteration.
+          cdqkeep_loc = cmplx_0
+          ncg = 0
+          gcfac = 0.0_dp
+          if (lprint .and. print_output%iprint > 0) &
+            write (stdout, '(1x,a,i0,a,es12.5)') 'LINE --> Backtracking accepted after ', &
+              line_search_backtracks, ' reduction(s); step = ', alphamin
+        end if
+
+      else if (lquad) then
+
+        ! Historical line-search behavior: accept the parabolic step without
+        ! checking the actual spread at the predicted minimum.
+        cdq_loc(:, :, :) = cdqkeep_loc(:, :, :)*(alphamin/(4.0_dp*kmesh_info%wbtot))
+
+        u_matrix_loc = u0_loc
+        if (optimisation <= 0) then
+          read (page_unit) m_matrix_loc
+          rewind (page_unit)
+        else
+          m_matrix_loc = m0_loc
+        end if
+
+        call internal_new_u_and_m(cdq, cmtmp, tmp_cdq, cwork, rwork, evals, cwschur1, cwschur2, &
+                                  cwschur3, cwschur4, cz, num_wann, num_kpts, kmesh_info, &
+                                  lsitesymmetry, cdq_loc, u_matrix_loc, m_matrix_loc, &
+                                  print_output%timing_level, stdout, sitesym, timer, nkrank, &
+                                  global_k, error, comm)
+        if (allocated(error)) return
+
+        call wann_omega(csheet, sheet, rave, r2ave, rave2, wann_spread, num_wann, kmesh_info, &
+                        num_kpts, print_output, wann_control%use_ss_functional, wann_control%constrain, &
+                        omega%invariant, ln_tmp_loc, m_matrix_loc, lambda_loc, first_pass, timer, &
+                        nkrank, global_k, error, comm)
+        if (allocated(error)) return
+
       else
 
-        call wann_spread_copy(wann_spread, old_spread)
+        ! Historical fallback: retain the trial step that is already applied.
         call wann_spread_copy(trial_spread, wann_spread)
 
       end if
