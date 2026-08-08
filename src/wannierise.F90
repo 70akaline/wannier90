@@ -205,7 +205,7 @@ contains
     integer :: irguide
     integer :: irpt, loop_kpt
     integer :: nkrank
-    logical :: lconverged, lrandom, lfirst
+    logical :: lconverged, lrandom, lfirst, noise_step
     logical :: lprint, ldump, lquad
     real(kind=dp) :: doda0
     real(kind=dp) :: falphamin, alphamin
@@ -640,6 +640,10 @@ contains
         ncg = 0
         gcfac = 0.0_dp
       end if
+      ! internal_search_direction clears lrandom after adding the perturbation.
+      ! Retain whether this iteration is an explicitly requested noise kick so
+      ! the monotonic line search can accept one bounded escape step.
+      noise_step = lrandom
       call internal_search_direction(cdodq_precond_loc, cdqkeep_loc, iter, lprint, lrandom, &
                                      noise_count, ncg, gcfac, gcnorm0, gcnorm1, doda0, &
                                      wann_control, num_wann, kmesh_info%wbtot, cdq_loc, cdodq_loc, &
@@ -788,6 +792,12 @@ contains
 
       else if (wann_control%monotonic_line_search) then
 
+        ! At a converged minimum the directional derivative is almost zero,
+        ! so a parabolic line search tends to shrink an explicit random-noise
+        ! perturbation back to a zero step.  Use the existing trial_step as a
+        ! bounded escape kick, allow that one step to be non-monotonic, and
+        ! resume the monotonic safeguard on the following iteration.
+        if (noise_step) alphamin = wann_control%trial_step
         line_search_backtracks = 0
         do
           ! Restore the gauge at the start of the line search before every
@@ -817,6 +827,8 @@ contains
                           nkrank, global_k, error, comm)
           if (allocated(error)) return
 
+          if (noise_step) exit
+
           ! Ignore only round-off-level changes near convergence.  The scale
           ! factor is deliberately tied to machine precision, not a user
           ! convergence tolerance, so physically visible spread increases
@@ -833,7 +845,16 @@ contains
           end if
         end do
 
-        if (line_search_backtracks > 0) then
+        if (noise_step) then
+          ! A noise kick deliberately leaves the converged basin.  Do not let
+          ! its randomized direction seed the subsequent CG history.
+          cdqkeep_loc = cmplx_0
+          ncg = 0
+          gcfac = 0.0_dp
+          if (lprint .and. print_output%iprint > 0) &
+            write (stdout, '(1x,a,es12.5)') &
+              'LINE --> Monotonic noise escape accepted at trial step = ', alphamin
+        else if (line_search_backtracks > 0) then
           ! The rejected CG direction must not seed the next iteration.
           cdqkeep_loc = cmplx_0
           ncg = 0

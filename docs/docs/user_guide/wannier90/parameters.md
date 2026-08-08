@@ -877,6 +877,10 @@ If `true`, a line-search step that increases the actual spread is
 rejected and retried with half the step length. After a backtrack, the
 conjugate-gradient history is reset. This safeguard applies only to the
 line-search minimisation; it does not alter `fixed_step` calculations.
+If `conv_noise_amp` is positive, an explicitly requested noise kick is
+allowed to increase the spread once, using `trial_step` as its bounded
+step length. The conjugate-gradient history is then reset and monotonic
+backtracking resumes on the following iteration.
 
 The default value is `false`.
 
